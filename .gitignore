@@ -27,3 +27,5 @@ vendor/
 *.sln
 *.sw?
 .DS_Store
+.history
+*.log
