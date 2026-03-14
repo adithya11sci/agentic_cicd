@@ -3,16 +3,18 @@ package config
 import (
 	"log"
 	"os"
+	"strconv"
 
 	"github.com/joho/godotenv"
 )
 
 type Config struct {
-	GitHubToken   string
-	LLMAPIKey     string
-	Port          string
-	DatabaseURL   string
-	WebhookSecret string
+	GitHubToken         string
+	LLMAPIKey           string
+	Port                string
+	DatabaseURL         string
+	WebhookSecret       string
+	ConfidenceThreshold float64
 }
 
 func LoadConfig() *Config {
@@ -28,6 +30,17 @@ func LoadConfig() *Config {
 
 	if config.Port == "" {
 		config.Port = "8080"
+	}
+
+	confStr := os.Getenv("RCA_CONFIDENCE_THRESHOLD")
+	if confStr != "" {
+		if val, err := strconv.ParseFloat(confStr, 64); err == nil {
+			config.ConfidenceThreshold = val
+		} else {
+			config.ConfidenceThreshold = 0.75
+		}
+	} else {
+		config.ConfidenceThreshold = 0.75
 	}
 
 	if config.GitHubToken == "" || config.LLMAPIKey == "" {

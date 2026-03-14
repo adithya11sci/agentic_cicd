@@ -31,13 +31,14 @@ func main() {
 	llmSvc := services.NewLLMService(cfg.LLMAPIKey, logger)
 	githubSvc := services.NewGitHubService(cfg.GitHubToken)
 
-	monitorAgent := agents.NewMonitorAgent(logger, cfg)
+	monitorAgent := agents.NewMonitorAgent(logger, cfg, db)
 	rootCauseAgent := agents.NewRootCauseAgent(logger, llmSvc)
 	repairAgent := agents.NewRepairAgent(logger, llmSvc)
 	govAgent := agents.NewGovernanceAgent(logger, llmSvc, db)
 	prAgent := agents.NewPRAgent(githubSvc, logger)
 
 	orch := orchestrator.NewOrchestrator(
+		cfg,
 		monitorAgent,
 		rootCauseAgent,
 		repairAgent,

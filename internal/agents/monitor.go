@@ -3,11 +3,12 @@ package agents
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
-	"sync"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/go-github/v69/github"
@@ -24,15 +25,16 @@ var (
 )
 
 type MonitorAgent struct {
-	logger        *zap.Logger
-	secret        []byte
-	deliveryCache sync.Map
+	logger *zap.Logger
+	secret []byte
+	db     *sql.DB
 }
 
-func NewMonitorAgent(logger *zap.Logger, cfg *config.Config) *MonitorAgent {
+func NewMonitorAgent(logger *zap.Logger, cfg *config.Config, db *sql.DB) *MonitorAgent {
 	return &MonitorAgent{
 		logger: logger,
 		secret: []byte(cfg.WebhookSecret),
+		db:     db,
 	}
 }
 
@@ -50,13 +52,20 @@ func (m *MonitorAgent) VerifySignature(payload []byte, signature string) error {
 }
 
 func (m *MonitorAgent) HandleWebhook(c *gin.Context) (*models.PipelineEvent, error) {
-    // Gap 4: Idempotency keys
 	deliveryID := c.GetHeader("X-GitHub-Delivery")
-	if deliveryID != "" {
-		if _, exists := m.deliveryCache.LoadOrStore(deliveryID, true); exists {
-			m.logger.Info("Duplicate webhook delivery skipped", zap.String("delivery_id", deliveryID))
-			return nil, ErrDuplicateDelivery
+	
+	if deliveryID != "" && m.db != nil {
+		_, err := m.db.ExecContext(c.Request.Context(), "INSERT INTO processed_webhooks (delivery_id) VALUES ($1)", deliveryID)
+		if err != nil {
+			// Postgres unique violation code is 23505
+			if strings.Contains(err.Error(), "unique constraint") || strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "23505") {
+				m.logger.Info("Duplicate webhook delivery skipped via DB limit", zap.String("delivery_id", deliveryID))
+				return nil, ErrDuplicateDelivery
+			}
+			m.logger.Error("Failed to persist delivery_id to DB", zap.Error(err))
 		}
+	} else if deliveryID != "" && m.db == nil {
+		m.logger.Warn("Database not configured, skipping idempotency check for delivery", zap.String("delivery_id", deliveryID))
 	}
 
 	payload, err := io.ReadAll(c.Request.Body)
@@ -64,7 +73,6 @@ func (m *MonitorAgent) HandleWebhook(c *gin.Context) (*models.PipelineEvent, err
 		return nil, err
 	}
 
-    // Gap 7: Webhook Signature Verification
 	signature := c.GetHeader("X-Hub-Signature-256")
 	if err := m.VerifySignature(payload, signature); err != nil {
 		m.logger.Warn("Signature verification failed", zap.Error(err))
@@ -79,7 +87,7 @@ func (m *MonitorAgent) HandleWebhook(c *gin.Context) (*models.PipelineEvent, err
 	switch e := event.(type) {
 	case *github.WorkflowRunEvent:
 		if e.GetAction() != "completed" || e.GetWorkflowRun().GetConclusion() != "failure" {
-			return nil, nil // Not an error, just ignore
+			return nil, nil
 		}
 		return &models.PipelineEvent{
 			RepositoryName:  e.GetRepo().GetName(),
@@ -88,7 +96,7 @@ func (m *MonitorAgent) HandleWebhook(c *gin.Context) (*models.PipelineEvent, err
 			Branch:          e.GetWorkflowRun().GetHeadBranch(),
 			PipelineID:      e.GetWorkflowRun().GetID(),
 			Status:          "failed",
-			Logs:            "simulated logs: syntax error", // Normally fetched via GitHub API using action run ID
+			Logs:            "simulated logs: syntax error",
 		}, nil
 	case *github.PingEvent:
 		m.logger.Info("Received ping event")

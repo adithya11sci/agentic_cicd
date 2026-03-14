@@ -10,8 +10,8 @@ import (
 
 func InitDB(dbURL string) (*sql.DB, error) {
 	if dbURL == "" {
-		log.Println("Warning: DATABASE_URL is not set. Governance decisions will not be persisted.")
-		return nil, nil // Return nil so agents can selectively skip DB operations
+		log.Println("Warning: DATABASE_URL is not set. DB operations will be skipped.")
+		return nil, nil
 	}
 
 	db, err := sql.Open("postgres", dbURL)
@@ -23,7 +23,6 @@ func InitDB(dbURL string) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to connect to database: %v", err)
 	}
 
-	// Initialize tables
 	query := `
 	CREATE TABLE IF NOT EXISTS governance_decisions (
 		id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -33,12 +32,17 @@ func InitDB(dbURL string) (*sql.DB, error) {
 		decision    TEXT NOT NULL,
 		llm_reason  TEXT,
 		decided_at  TIMESTAMPTZ DEFAULT now()
+	);
+	
+	CREATE TABLE IF NOT EXISTS processed_webhooks (
+		delivery_id TEXT PRIMARY KEY,
+		received_at TIMESTAMPTZ DEFAULT now()
 	);`
 
 	if _, err := db.Exec(query); err != nil {
 		return nil, fmt.Errorf("failed to create tables: %v", err)
 	}
 
-	log.Println("Database logic initialized routing ready.")
+	log.Println("Database schemas initialized.")
 	return db, nil
 }

@@ -2,10 +2,10 @@ package agents
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"crypto/sha256"
 
 	"go.uber.org/zap"
 
@@ -35,13 +35,13 @@ func (g *GovernanceAgent) Evaluate(ctx context.Context, pCtx *models.PipelineCon
 		return nil, err
 	}
 
-	// Gap 2: Governance Audit Trail Persistence
 	if g.db != nil {
 		patchHash := fmt.Sprintf("%x", sha256.Sum256([]byte(pCtx.Repair.Patch)))
 		query := `INSERT INTO governance_decisions (pipeline_id, risk_level, patch_hash, decision, llm_reason) VALUES ($1, $2, $3, $4, $5)`
 		_, err := g.db.ExecContext(ctx, query, fmt.Sprintf("%d", pCtx.Event.PipelineID), result.RiskLevel, patchHash, "PENDING", result.Reason)
 		if err != nil {
 			g.logger.Error("Failed to persist audit trail", zap.Error(err))
+			return nil, fmt.Errorf("failed to persist governance decision: %w", err)
 		} else {
 			g.logger.Info("Decision persisted to Audit Trail")
 		}
