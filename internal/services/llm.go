@@ -3,49 +3,25 @@ package services
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
+	"time"
 
 	"github.com/sashabaranov/go-openai"
+	"go.uber.org/zap"
 )
 
 type LLMService struct {
 	client *openai.Client
+	logger *zap.Logger
 }
 
-func NewLLMService(apiKey string) *LLMService {
+func NewLLMService(apiKey string, logger *zap.Logger) *LLMService {
 	return &LLMService{
 		client: openai.NewClient(apiKey),
+		logger: logger,
 	}
 }
 
-func (s *LLMService) GenerateResponse(ctx context.Context, prompt string) (string, error) {
-	resp, err := s.client.CreateChatCompletion(
-		ctx,
-		openai.ChatCompletionRequest{
-			Model:       openai.GPT4,
-			Temperature: 0.2, // low temperature for more deterministic/JSON outputs
-			Messages: []openai.ChatCompletionMessage{
-				{
-					Role:    openai.ChatMessageRoleSystem,
-					Content: "You are a helpful DevOps assistant. Always output valid JSON only, without markdown wrappers like ```json.",
-				},
-				{
-					Role:    openai.ChatMessageRoleUser,
-					Content: prompt,
-				},
-			},
-		},
-	)
-
-	if err != nil {
-		return "", fmt.Errorf("LLM completion error: %v", err)
-	}
-
-	return resp.Choices[0].Message.Content, nil
-}
-
-// CleanJSON string from LLM responses by removing markdown wrappers
 func CleanJSON(s string) string {
 	s = strings.TrimSpace(s)
 	if strings.HasPrefix(s, "```json") {
@@ -59,10 +35,34 @@ func CleanJSON(s string) string {
 	return strings.TrimSpace(s)
 }
 
-func ReadPromptTemplate(filePath string) (string, error) {
-	bytes, err := os.ReadFile(filePath)
-	if err != nil {
-		return "", err
+// Gap 1: No Retry on LLM Fallback (implemented exponential backoff)
+func (s *LLMService) GenerateJSON(ctx context.Context, userPrompt, systemPrompt string) (string, error) {
+	maxRetries := 3
+	var lastErr error
+
+	for i := 0; i < maxRetries; i++ {
+		req := openai.ChatCompletionRequest{
+			Model: openai.GPT4o,
+			Messages: []openai.ChatCompletionMessage{
+				{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
+				{Role: openai.ChatMessageRoleUser, Content: userPrompt},
+			},
+			Temperature: 0.2, 
+		}
+
+		resp, err := s.client.CreateChatCompletion(ctx, req)
+		if err == nil && len(resp.Choices) > 0 {
+			return resp.Choices[0].Message.Content, nil
+		}
+		lastErr = err
+		
+		s.logger.Warn("LLM call failed, retrying", zap.Int("attempt", i+1), zap.Error(err))
+		
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(time.Duration(1<<i) * time.Second): // 1s, 2s, 4s
+		}
 	}
-	return string(bytes), nil
+	return "", fmt.Errorf("LLM generation failed after %d retries: %v", maxRetries, lastErr)
 }

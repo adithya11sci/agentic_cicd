@@ -1,4 +1,6 @@
-package main
+import os
+
+content = """package main
 
 import (
 	"context"
@@ -11,10 +13,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
-	"github.com/user/agentic-cicd/internal/agents"
-	"github.com/user/agentic-cicd/internal/config"
-	"github.com/user/agentic-cicd/internal/orchestrator"
-	"github.com/user/agentic-cicd/internal/services"
+	"agentic-cicd/internal/agents"
+	"agentic-cicd/internal/config"
+	"agentic-cicd/internal/orchestrator"
+	"agentic-cicd/internal/services"
 )
 
 func main() {
@@ -29,13 +31,13 @@ func main() {
 	}
 
 	llmSvc := services.NewLLMService(cfg.LLMAPIKey, logger)
-	githubSvc := services.NewGitHubService(cfg.GitHubToken)
+	githubSvc := services.NewGitHubService(cfg.GitHubToken, logger)
 
 	monitorAgent := agents.NewMonitorAgent(logger, cfg)
 	rootCauseAgent := agents.NewRootCauseAgent(logger, llmSvc)
 	repairAgent := agents.NewRepairAgent(logger, llmSvc)
 	govAgent := agents.NewGovernanceAgent(logger, llmSvc, db)
-	prAgent := agents.NewPRAgent(githubSvc, logger)
+	prAgent := agents.NewPRAgent(logger, githubSvc)
 
 	orch := orchestrator.NewOrchestrator(
 		monitorAgent,
@@ -96,3 +98,7 @@ func main() {
 
 	logger.Info("Server exiting")
 }
+"""
+
+with open(r'd:\agentic_devops\agentic-cicd\cmd\server.go', 'w', encoding='utf-8') as f:
+    f.write(content)

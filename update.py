@@ -1,4 +1,46 @@
-package models
+import os
+
+config_content = """package config
+
+import (
+	"log"
+	"os"
+
+	"github.com/joho/godotenv"
+)
+
+type Config struct {
+	GitHubToken   string
+	LLMAPIKey     string
+	Port          string
+	DatabaseURL   string
+	WebhookSecret string
+}
+
+func LoadConfig() *Config {
+	_ = godotenv.Load()
+
+	config := &Config{
+		GitHubToken:   os.Getenv("GITHUB_TOKEN"),
+		LLMAPIKey:     os.Getenv("LLM_API_KEY"),
+		Port:          os.Getenv("PORT"),
+		DatabaseURL:   os.Getenv("DATABASE_URL"),
+		WebhookSecret: os.Getenv("WEBHOOK_SECRET"),
+	}
+
+	if config.Port == "" {
+		config.Port = "8080"
+	}
+
+	if config.GitHubToken == "" || config.LLMAPIKey == "" {
+		log.Println("Warning: GITHUB_TOKEN or LLM_API_KEY is not set.")
+	}
+
+	return config
+}
+"""
+
+models_content = """package models
 
 type PipelineEvent struct {
 	RepositoryName  string `json:"repository_name"`
@@ -39,3 +81,10 @@ type PipelineContext struct {
 	Governance    *GovernanceResult
 	ExecutionLogs []string
 }
+"""
+
+with open(r'd:\agentic_devops\agentic-cicd\internal\config\config.go', 'w', encoding='utf-8') as f:
+    f.write(config_content)
+
+with open(r'd:\agentic_devops\agentic-cicd\internal\models\event.go', 'w', encoding='utf-8') as f:
+    f.write(models_content)

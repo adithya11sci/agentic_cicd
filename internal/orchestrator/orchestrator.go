@@ -2,12 +2,11 @@ package orchestrator
 
 import (
 	"context"
-	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/user/agentic-cicd/internal/agents"
 	"github.com/user/agentic-cicd/internal/models"
-	"github.com/user/agentic-cicd/internal/services"
-	"go.uber.org/zap"
 )
 
 type Orchestrator struct {
@@ -16,82 +15,68 @@ type Orchestrator struct {
 	repair     *agents.RepairAgent
 	governance *agents.GovernanceAgent
 	prAgent    *agents.PRAgent
-	githubSvc  *services.GitHubService
 	logger     *zap.Logger
 }
 
 func NewOrchestrator(
-	monitor *agents.MonitorAgent,
-	rootCause *agents.RootCauseAgent,
-	repair *agents.RepairAgent,
-	governance *agents.GovernanceAgent,
-	prAgent *agents.PRAgent,
-	githubSvc *services.GitHubService,
+	m *agents.MonitorAgent,
+	rc *agents.RootCauseAgent,
+	re *agents.RepairAgent,
+	gov *agents.GovernanceAgent,
+	pr *agents.PRAgent,
 	logger *zap.Logger,
 ) *Orchestrator {
-	return &Orchestrator{
-		monitor:    monitor,
-		rootCause:  rootCause,
-		repair:     repair,
-		governance: governance,
-		prAgent:    prAgent,
-		githubSvc:  githubSvc,
-		logger:     logger,
-	}
+	return &Orchestrator{monitor: m, rootCause: rc, repair: re, governance: gov, prAgent: pr, logger: logger}
 }
 
-// ProcessEvent runs the multi-agent workflow
-func (o *Orchestrator) ProcessEvent(event *models.PipelineEvent) {
+func (o *Orchestrator) RunPipeline(ctx context.Context, event *models.PipelineEvent) {
 	defer func() {
 		if r := recover(); r != nil {
-			o.logger.Error("Panic recovered in ProcessEvent", zap.Any("recover", r))
+			o.logger.Error("Pipeline panicked, recovered", zap.Any("panic", r))
 		}
 	}()
 
-	// Create a context with timeout to prevent hanging forever
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
+    // Gap 6: Typed Pipeline Context
+	pCtx := &models.PipelineContext{Event: event}
 
-	o.logger.Info("Coordinator starting workflow", zap.String("repo", event.RepositoryName))
-
-	// Step 1: Fetch Extra Context (Logs, Diff)
-	logs, _ := o.githubSvc.FetchPipelineLogs(ctx, event.RepositoryOwner, event.RepositoryName, event.PipelineID)
-	diff, _ := o.githubSvc.FetchCommitDiff(ctx, event.RepositoryOwner, event.RepositoryName, event.CommitSHA)
-	event.Logs = logs
-	event.Diff = diff
-	event.TestReport = "Mocked Test Report: 1 test failing."
-
-	// Step 2: Root Cause Analysis
+	// 1. Root Cause
 	analysis, err := o.rootCause.Analyze(ctx, event)
 	if err != nil {
-		o.logger.Error("Root cause analysis failed", zap.Error(err))
+		o.logger.Error("RootCause failed", zap.Error(err))
+		return
+	}
+	pCtx.Analysis = analysis
+
+    // Gap 5: Root Cause Confidence Scoring threshold
+	if analysis.Confidence < 0.80 {
+		o.logger.Warn("Analysis confidence too low, halting pipeline", zap.Float64("confidence", analysis.Confidence))
 		return
 	}
 
-	// Step 3: Auto Repair Gen
-	fix, err := o.repair.GenerateFix(ctx, event, analysis)
+	// 2. Repair
+	repair, err := o.repair.GenerateFix(ctx, analysis)
 	if err != nil {
-		o.logger.Error("Repair generation failed", zap.Error(err))
+		o.logger.Error("Repair failed", zap.Error(err))
 		return
 	}
+	pCtx.Repair = repair
 
-	// Step 4: Governance
-	govResult, err := o.governance.EvaluateRisk(ctx, fix)
+	// 3. Governance
+	govResult, err := o.governance.Evaluate(ctx, pCtx)
 	if err != nil {
-		o.logger.Error("Governance evaluation failed", zap.Error(err))
+		o.logger.Error("Governance skipped/failed", zap.Error(err))
 		return
 	}
+	pCtx.Governance = govResult
 
-	// Step 5: Check Deployment Risk and take action
-	o.logger.Info("Governance decision", zap.String("risk", govResult.RiskLevel), zap.Bool("needs_approval", govResult.RequiresHumanApproval))
-
-	if govResult.RiskLevel == "LOW" || !govResult.RequiresHumanApproval {
-		// Create PR
-		err := o.prAgent.CreateFixPR(ctx, event, analysis, fix)
+	// 4. Action
+	if !govResult.RequiresHumanApproval {
+		o.logger.Info("Auto-approving patch creation")
+		err := o.prAgent.CreateFixPR(ctx, event, analysis, repair)
 		if err != nil {
-			o.logger.Error("Failed to create PR", zap.Error(err))
+			o.logger.Error("PR Agent failed", zap.Error(err))
 		}
 	} else {
-		o.logger.Info("Fix requires human approval. Sending notification... (Mocked Slack ping)", zap.String("reason", govResult.Reason))
+		o.logger.Info("Human approval required for patch PR, delegating to dashboard")
 	}
 }

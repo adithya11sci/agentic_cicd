@@ -1,74 +1,100 @@
 package agents
 
 import (
-	"encoding/json"
-	"fmt"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"io"
+	"net/http"
+	"sync"
 
 	"github.com/gin-gonic/gin"
-	"github.com/user/agentic-cicd/internal/models"
+	"github.com/google/go-github/v69/github"
 	"go.uber.org/zap"
+
+	"github.com/user/agentic-cicd/internal/config"
+	"github.com/user/agentic-cicd/internal/models"
+)
+
+var (
+	ErrInvalidSignature    = errors.New("invalid webhook signature")
+	ErrDuplicateDelivery   = errors.New("duplicate delivery ID")
+	ErrUnsupportedPayload  = errors.New("unsupported payload type")
 )
 
 type MonitorAgent struct {
-	logger *zap.Logger
+	logger        *zap.Logger
+	secret        []byte
+	deliveryCache sync.Map
 }
 
-func NewMonitorAgent(logger *zap.Logger) *MonitorAgent {
-	return &MonitorAgent{logger: logger}
+func NewMonitorAgent(logger *zap.Logger, cfg *config.Config) *MonitorAgent {
+	return &MonitorAgent{
+		logger: logger,
+		secret: []byte(cfg.WebhookSecret),
+	}
 }
 
-// HandleWebhook parses the incoming GitHub Workflow Run webhook
-func (a *MonitorAgent) HandleWebhook(c *gin.Context) (*models.PipelineEvent, error) {
-	// Simplify payload for example purposes
-	// Usually we bind to GitHub's WorkflowRunEvent struct
-	body, err := io.ReadAll(c.Request.Body)
+func (m *MonitorAgent) VerifySignature(payload []byte, signature string) error {
+	if len(m.secret) == 0 {
+		return nil
+	}
+	mac := hmac.New(sha256.New, m.secret)
+	mac.Write(payload)
+	expectedMAC := hex.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte("sha256="+expectedMAC), []byte(signature)) {
+		return ErrInvalidSignature
+	}
+	return nil
+}
+
+func (m *MonitorAgent) HandleWebhook(c *gin.Context) (*models.PipelineEvent, error) {
+    // Gap 4: Idempotency keys
+	deliveryID := c.GetHeader("X-GitHub-Delivery")
+	if deliveryID != "" {
+		if _, exists := m.deliveryCache.LoadOrStore(deliveryID, true); exists {
+			m.logger.Info("Duplicate webhook delivery skipped", zap.String("delivery_id", deliveryID))
+			return nil, ErrDuplicateDelivery
+		}
+	}
+
+	payload, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		return nil, err
 	}
 
-	var payload map[string]interface{}
-	if err := json.Unmarshal(body, &payload); err != nil {
+    // Gap 7: Webhook Signature Verification
+	signature := c.GetHeader("X-Hub-Signature-256")
+	if err := m.VerifySignature(payload, signature); err != nil {
+		m.logger.Warn("Signature verification failed", zap.Error(err))
 		return nil, err
 	}
 
-	// Check for GitHub Ping Event (sent when webhook is created)
-	if ping, exists := payload["zen"]; exists {
-		a.logger.Info("Received GitHub ping event", zap.Any("zen", ping))
-		return nil, nil // Return gracefully without errors for ping events
+	event, err := github.ParseWebHook(github.WebHookType(c.Request), payload)
+	if err != nil {
+		return nil, err
 	}
 
-	// Basic check assuming workflow_run event
-	action, ok := payload["action"].(string)
-	if !ok || action != "completed" {
-		a.logger.Info("Ignored webhook event", zap.String("action", action))
-		return nil, nil // Not a completed workflow run
+	switch e := event.(type) {
+	case *github.WorkflowRunEvent:
+		if e.GetAction() != "completed" || e.GetWorkflowRun().GetConclusion() != "failure" {
+			return nil, nil // Not an error, just ignore
+		}
+		return &models.PipelineEvent{
+			RepositoryName:  e.GetRepo().GetName(),
+			RepositoryOwner: e.GetRepo().GetOwner().GetLogin(),
+			CommitSHA:       e.GetWorkflowRun().GetHeadSHA(),
+			Branch:          e.GetWorkflowRun().GetHeadBranch(),
+			PipelineID:      e.GetWorkflowRun().GetID(),
+			Status:          "failed",
+			Logs:            "simulated logs: syntax error", // Normally fetched via GitHub API using action run ID
+		}, nil
+	case *github.PingEvent:
+		m.logger.Info("Received ping event")
+		c.JSON(http.StatusOK, gin.H{"message": "Pong!"})
+		return nil, nil
+	default:
+		return nil, ErrUnsupportedPayload
 	}
-
-	workflowRun, ok := payload["workflow_run"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid payload: missing workflow_run")
-	}
-
-	conclusion, _ := workflowRun["conclusion"].(string)
-	if conclusion != "failure" {
-		a.logger.Info("Workflow completed successfully, no action needed", zap.String("conclusion", conclusion))
-		return nil, nil // We only care about failures
-	}
-
-	repoMap, _ := payload["repository"].(map[string]interface{})
-	ownerMap, _ := repoMap["owner"].(map[string]interface{})
-
-	event := &models.PipelineEvent{
-		RepositoryName:  repoMap["name"].(string),
-		RepositoryOwner: ownerMap["login"].(string),
-		CommitSHA:       workflowRun["head_sha"].(string),
-		Branch:          workflowRun["head_branch"].(string),
-		PipelineID:      int64(workflowRun["id"].(float64)),
-		Status:          conclusion,
-	}
-
-	a.logger.Info("Pipeline failure detected", zap.String("repo", event.RepositoryName), zap.String("sha", event.CommitSHA))
-
-	return event, nil
 }

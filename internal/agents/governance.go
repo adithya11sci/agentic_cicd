@@ -2,50 +2,50 @@ package agents
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
+	"crypto/sha256"
+
+	"go.uber.org/zap"
 
 	"github.com/user/agentic-cicd/internal/models"
 	"github.com/user/agentic-cicd/internal/services"
-	"go.uber.org/zap"
 )
 
 type GovernanceAgent struct {
-	llm    *services.LLMService
 	logger *zap.Logger
+	llm    *services.LLMService
+	db     *sql.DB
 }
 
-func NewGovernanceAgent(llm *services.LLMService, logger *zap.Logger) *GovernanceAgent {
-	return &GovernanceAgent{
-		llm:    llm,
-		logger: logger,
-	}
+func NewGovernanceAgent(logger *zap.Logger, llm *services.LLMService, db *sql.DB) *GovernanceAgent {
+	return &GovernanceAgent{logger: logger, llm: llm, db: db}
 }
 
-func (a *GovernanceAgent) EvaluateRisk(ctx context.Context, fix *models.RepairResult) (*models.GovernanceResult, error) {
-	a.logger.Info("Evaluating Governance Risk", zap.String("fix_type", fix.FixType))
-
-	promptTmpl, err := services.ReadPromptTemplate("prompts/governance_prompt.txt")
+func (g *GovernanceAgent) Evaluate(ctx context.Context, pCtx *models.PipelineContext) (*models.GovernanceResult, error) {
+	prompt := fmt.Sprintf("Evaluate risk for Patch: %s, Explain: %s", pCtx.Repair.Patch, pCtx.Repair.Explanation)
+	resp, err := g.llm.GenerateJSON(ctx, prompt, "Evaluate risk. Return JSON with risk_level, requires_human_approval, reason.")
 	if err != nil {
-		return nil, fmt.Errorf("failed to read prompt: %v", err)
+		return nil, err
 	}
-
-	fixJSON, _ := json.Marshal(fix)
-	prompt := strings.Replace(promptTmpl, "{fix}", string(fixJSON), 1)
-
-	resp, err := a.llm.GenerateResponse(ctx, prompt)
-	if err != nil {
-		return nil, fmt.Errorf("LLM failed to evaluate risk: %v", err)
-	}
-
-	respClean := services.CleanJSON(resp)
 
 	var result models.GovernanceResult
-	if err := json.Unmarshal([]byte(respClean), &result); err != nil {
-		a.logger.Error("Failed to parse LLM JSON", zap.String("response", respClean))
-		return nil, fmt.Errorf("invalid json from LLM: %v", err)
+	if err := json.Unmarshal([]byte(services.CleanJSON(resp)), &result); err != nil {
+		return nil, err
 	}
 
+	// Gap 2: Governance Audit Trail Persistence
+	if g.db != nil {
+		patchHash := fmt.Sprintf("%x", sha256.Sum256([]byte(pCtx.Repair.Patch)))
+		query := `INSERT INTO governance_decisions (pipeline_id, risk_level, patch_hash, decision, llm_reason) VALUES ($1, $2, $3, $4, $5)`
+		_, err := g.db.ExecContext(ctx, query, fmt.Sprintf("%d", pCtx.Event.PipelineID), result.RiskLevel, patchHash, "PENDING", result.Reason)
+		if err != nil {
+			g.logger.Error("Failed to persist audit trail", zap.Error(err))
+		} else {
+			g.logger.Info("Decision persisted to Audit Trail")
+		}
+	}
+	
 	return &result, nil
 }

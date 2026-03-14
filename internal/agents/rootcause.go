@@ -4,49 +4,31 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
+
+	"go.uber.org/zap"
 
 	"github.com/user/agentic-cicd/internal/models"
 	"github.com/user/agentic-cicd/internal/services"
-	"go.uber.org/zap"
 )
 
 type RootCauseAgent struct {
-	llm    *services.LLMService
 	logger *zap.Logger
+	llm    *services.LLMService
 }
 
-func NewRootCauseAgent(llm *services.LLMService, logger *zap.Logger) *RootCauseAgent {
-	return &RootCauseAgent{
-		llm:    llm,
-		logger: logger,
-	}
+func NewRootCauseAgent(logger *zap.Logger, llm *services.LLMService) *RootCauseAgent {
+	return &RootCauseAgent{logger: logger, llm: llm}
 }
 
-func (a *RootCauseAgent) Analyze(ctx context.Context, event *models.PipelineEvent) (*models.AnalysisResult, error) {
-	a.logger.Info("Starting Root Cause Analysis", zap.String("repo", event.RepositoryName))
-
-	promptTmpl, err := services.ReadPromptTemplate("prompts/root_cause_prompt.txt")
+func (r *RootCauseAgent) Analyze(ctx context.Context, event *models.PipelineEvent) (*models.AnalysisResult, error) {
+	prompt := fmt.Sprintf("Analyze this failure.\nLogs: %s\nDiff: %s", event.Logs, event.Diff)
+	resp, err := r.llm.GenerateJSON(ctx, prompt, "Analyze failure. Return JSON with failure_type, root_cause, affected_files, confidence (float 0.0-1.0)")
 	if err != nil {
-		return nil, fmt.Errorf("failed to read prompt: %v", err)
+		return nil, err
 	}
-
-	prompt := strings.Replace(promptTmpl, "{logs}", event.Logs, 1)
-	prompt = strings.Replace(prompt, "{diff}", event.Diff, 1)
-	prompt = strings.Replace(prompt, "{tests}", event.TestReport, 1)
-
-	resp, err := a.llm.GenerateResponse(ctx, prompt)
-	if err != nil {
-		return nil, fmt.Errorf("LLM failed to analyze root cause: %v", err)
-	}
-
-	respClean := services.CleanJSON(resp)
-
 	var result models.AnalysisResult
-	if err := json.Unmarshal([]byte(respClean), &result); err != nil {
-		a.logger.Error("Failed to parse LLM JSON", zap.String("response", respClean))
-		return nil, fmt.Errorf("invalid json from LLM: %v", err)
+	if err := json.Unmarshal([]byte(services.CleanJSON(resp)), &result); err != nil {
+		return nil, err
 	}
-
 	return &result, nil
 }
