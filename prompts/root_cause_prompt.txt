@@ -1,0 +1,20 @@
+You are a senior DevOps engineer. Analyze the CI/CD failure.
+
+Pipeline Logs:
+{logs}
+
+Commit Diff:
+{diff}
+
+Test Results:
+{tests}
+
+Identify the root cause.
+
+Return ONLY a valid JSON object matching the following structure without any markdown blocks:
+{
+  "failure_type": "build_error | test_failure | dependency_conflict | ...",
+  "root_cause": "Detailed explanation of why it failed",
+  "affected_files": ["file1.go", "file2.go"],
+  "confidence": "High | Medium | Low"
+}

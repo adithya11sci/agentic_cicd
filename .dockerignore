@@ -1,0 +1,17 @@
+# Build output
+vendor/
+.env
+.git
+.gitignore
+README.md
+
+# Editor and IDE
+.vscode/
+.idea/
+
+# Go and OS
+*.log
+*.exe
+*.o
+*.a
+.DS_Store
