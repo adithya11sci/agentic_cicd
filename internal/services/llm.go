@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -16,8 +17,12 @@ type LLMService struct {
 }
 
 func NewLLMService(apiKey string, logger *zap.Logger) *LLMService {
+	clientConfig := openai.DefaultConfig(apiKey)
+	if strings.HasPrefix(apiKey, "gsk_") {
+		clientConfig.BaseURL = "https://api.groq.com/openai/v1"
+	}
 	return &LLMService{
-		client: openai.NewClient(apiKey),
+		client: openai.NewClientWithConfig(clientConfig),
 		logger: logger,
 	}
 }
@@ -40,14 +45,21 @@ func (s *LLMService) GenerateJSON(ctx context.Context, userPrompt, systemPrompt 
 	maxRetries := 3
 	var lastErr error
 
+	model := openai.GPT4o
+	apiKey := os.Getenv("LLM_API_KEY")
+	if strings.HasPrefix(apiKey, "gsk_") {
+		// Automatically use Groq's high speed Llama 3 model
+		model = "llama-3.3-70b-versatile"
+	}
+
 	for i := 0; i < maxRetries; i++ {
 		req := openai.ChatCompletionRequest{
-			Model: openai.GPT4o,
+			Model: model,
 			Messages: []openai.ChatCompletionMessage{
 				{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
 				{Role: openai.ChatMessageRoleUser, Content: userPrompt},
 			},
-			Temperature: 0.2, 
+			Temperature: 0.2,
 		}
 
 		resp, err := s.client.CreateChatCompletion(ctx, req)
@@ -55,9 +67,8 @@ func (s *LLMService) GenerateJSON(ctx context.Context, userPrompt, systemPrompt 
 			return resp.Choices[0].Message.Content, nil
 		}
 		lastErr = err
-		
+
 		s.logger.Warn("LLM call failed, retrying", zap.Int("attempt", i+1), zap.Error(err))
-		
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
