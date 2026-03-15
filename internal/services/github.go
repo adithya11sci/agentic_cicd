@@ -24,7 +24,7 @@ client: github.NewClient(tc),
 }
 
 func (s *GitHubService) FetchPipelineLogs(ctx context.Context, owner, repo string, runID int64) (string, error) {
-return "Mock Logs: build failed due to dependency conflict in internal mapping...", nil
+return "Traceback (most recent call last): File calc.py, line 6: TypeError: unsupported operand type(s) for +: int and str", nil
 }
 
 func (s *GitHubService) FetchCommitDiff(ctx context.Context, owner, repo string, sha string) (string, error) {

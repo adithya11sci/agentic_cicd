@@ -1,0 +1,1 @@
+(Get-Content -Path 'd:\agentic_devops\agentic-cicd\internal\services\github.go') -replace 'Mock Logs: build failed due to dependency conflict in internal mapping...', 'Traceback (most recent call last): File calc.py, line 6: TypeError: unsupported operand type(s) for +: int and str' | Set-Content -Path 'd:\agentic_devops\agentic-cicd\internal\services\github.go'
